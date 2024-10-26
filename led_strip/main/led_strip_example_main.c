@@ -1,123 +1,58 @@
-/*
- * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Unlicense OR CC0-1.0
- */
 #include <string.h>
+#include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "driver/rmt_tx.h"
 #include "led_strip_encoder.h"
 
 #define RMT_LED_STRIP_RESOLUTION_HZ 10000000 // 10MHz resolution, 1 tick = 0.1us (led strip needs a high resolution)
 #define RMT_LED_STRIP_GPIO_NUM      18
-
-#define EXAMPLE_LED_NUMBERS         7
-#define EXAMPLE_CHASE_SPEED_MS      50
-
-#define BRIGHTNESS 10
+#define BOOT_BUTTON_GPIO            0
+#define EXAMPLE_LED_NUMBERS         64
+#define EXAMPLE_CHASE_SPEED_MS      30 // Increased delay to reduce CPU load
+#define BRIGHTNESS                  100
 
 static const char *TAG = "example";
 
 static uint8_t led_strip_pixels[EXAMPLE_LED_NUMBERS * 3];
+static QueueHandle_t gpio_evt_queue = NULL;
 
-/**
- * @brief Simple helper function, converting HSV color space to RGB color space
- *
- * Wiki: https://en.wikipedia.org/wiki/HSL_and_HSV
- *
- */
-void led_strip_hsv2rgb(uint32_t h, uint32_t s, uint32_t v, uint32_t *r, uint32_t *g, uint32_t *b)
-{
-    h %= 360; // h -> [0,360]
+/* Helper function from your original code */
+void led_strip_hsv2rgb(uint32_t h, uint32_t s, uint32_t v, uint32_t *r, uint32_t *g, uint32_t *b) {
+    h %= 360;
     uint32_t rgb_max = v * 2.55f;
     uint32_t rgb_min = rgb_max * (100 - s) / 100.0f;
-
     uint32_t i = h / 60;
     uint32_t diff = h % 60;
-
-    // RGB adjustment amount by hue
     uint32_t rgb_adj = (rgb_max - rgb_min) * diff / 60;
-
     switch (i) {
-    case 0:
-        *r = rgb_max;
-        *g = rgb_min + rgb_adj;
-        *b = rgb_min;
-        break;
-    case 1:
-        *r = rgb_max - rgb_adj;
-        *g = rgb_max;
-        *b = rgb_min;
-        break;
-    case 2:
-        *r = rgb_min;
-        *g = rgb_max;
-        *b = rgb_min + rgb_adj;
-        break;
-    case 3:
-        *r = rgb_min;
-        *g = rgb_max - rgb_adj;
-        *b = rgb_max;
-        break;
-    case 4:
-        *r = rgb_min + rgb_adj;
-        *g = rgb_min;
-        *b = rgb_max;
-        break;
-    default:
-        *r = rgb_max;
-        *g = rgb_min;
-        *b = rgb_max - rgb_adj;
-        break;
+        case 0: *r = rgb_max; *g = rgb_min + rgb_adj; *b = rgb_min; break;
+        case 1: *r = rgb_max - rgb_adj; *g = rgb_max; *b = rgb_min; break;
+        case 2: *r = rgb_min; *g = rgb_max; *b = rgb_min + rgb_adj; break;
+        case 3: *r = rgb_min; *g = rgb_max - rgb_adj; *b = rgb_max; break;
+        case 4: *r = rgb_min + rgb_adj; *g = rgb_min; *b = rgb_max; break;
+        default: *r = rgb_max; *g = rgb_min; *b = rgb_max - rgb_adj; break;
     }
 }
 
-void app_main(void)
-{
-    uint32_t red = 0;
-    uint32_t green = 0;
-    uint32_t blue = 0;
-    uint16_t hue = 0;
-    uint16_t start_rgb = 0;
-
-    ESP_LOGI(TAG, "Create RMT TX channel");
-    rmt_channel_handle_t led_chan = NULL;
-    rmt_tx_channel_config_t tx_chan_config = {
-        .clk_src = RMT_CLK_SRC_DEFAULT, // select source clock
-        .gpio_num = RMT_LED_STRIP_GPIO_NUM,
-        .mem_block_symbols = 64, // increase the block size can make the LED less flickering
-        .resolution_hz = RMT_LED_STRIP_RESOLUTION_HZ,
-        .trans_queue_depth = 4, // set the number of transactions that can be pending in the background
-    };
-    ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_chan_config, &led_chan));
-
-    ESP_LOGI(TAG, "Install led strip encoder");
-    rmt_encoder_handle_t led_encoder = NULL;
-    led_strip_encoder_config_t encoder_config = {
-        .resolution = RMT_LED_STRIP_RESOLUTION_HZ,
-    };
-    ESP_ERROR_CHECK(rmt_new_led_strip_encoder(&encoder_config, &led_encoder));
-
-    ESP_LOGI(TAG, "Enable RMT TX channel");
-    ESP_ERROR_CHECK(rmt_enable(led_chan));
-
-    ESP_LOGI(TAG, "Start LED rainbow chase");
-    rmt_transmit_config_t tx_config = {
-        .loop_count = 0, // no transfer loop
-    };
-    while (1) {
+void strobe_effect(rmt_channel_handle_t led_chan, rmt_encoder_handle_t led_encoder) {
+    ESP_LOGI(TAG, "Start LED strobe effect");
+    rmt_transmit_config_t tx_config = {.loop_count = 0};
+    uint32_t red = 0, green = 0, blue = 0;
+    uint16_t hue = 0, start_rgb = 0;
+    while (gpio_get_level(BOOT_BUTTON_GPIO) == 0) { // Ensure button is held during the effect
         for (int i = 0; i < 3; i++) {
             for (int j = i; j < EXAMPLE_LED_NUMBERS; j += 3) {
-                // Build RGB pixels
                 hue = j * 360 / EXAMPLE_LED_NUMBERS + start_rgb;
                 led_strip_hsv2rgb(hue, 100, BRIGHTNESS, &red, &green, &blue);
                 led_strip_pixels[j * 3 + 0] = green;
                 led_strip_pixels[j * 3 + 1] = blue;
                 led_strip_pixels[j * 3 + 2] = red;
             }
-            // Flush RGB values to LEDs
             ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
             ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
             vTaskDelay(pdMS_TO_TICKS(EXAMPLE_CHASE_SPEED_MS));
@@ -127,5 +62,138 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(EXAMPLE_CHASE_SPEED_MS));
         }
         start_rgb += 60;
+    }
+}
+
+void smooth_interpolation_effect(rmt_channel_handle_t led_chan, rmt_encoder_handle_t led_encoder) {
+    ESP_LOGI(TAG, "Start LED rainbow smooth transition");
+    rmt_transmit_config_t tx_config = {.loop_count = 0};
+    uint32_t red_start = 0, green_start = 0, blue_start = 0;
+    uint16_t start_hue = 0, end_hue = 60;
+
+    while (gpio_get_level(BOOT_BUTTON_GPIO) != 0) { // Run until button is pressed
+        for (int step = 0; step < 100; ++step) {
+            for (int i = 0; i < EXAMPLE_LED_NUMBERS; ++i) {
+                uint32_t hue = start_hue + (end_hue - start_hue) * step / 100;
+                led_strip_hsv2rgb(hue, 100, BRIGHTNESS, &red_start, &green_start, &blue_start);
+
+                led_strip_pixels[i * 3 + 0] = green_start;
+                led_strip_pixels[i * 3 + 1] = blue_start;
+                led_strip_pixels[i * 3 + 2] = red_start;
+            }
+            ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
+            ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
+            vTaskDelay(pdMS_TO_TICKS(EXAMPLE_CHASE_SPEED_MS/2));
+        }
+        uint16_t temp = start_hue;
+        start_hue = end_hue;
+        end_hue = temp + 60;
+    }
+}
+
+void color_transition_effect(rmt_channel_handle_t led_chan, rmt_encoder_handle_t led_encoder) {
+    ESP_LOGI(TAG, "Start LED color transition effect between Purple and Blue using HSV");
+
+    rmt_transmit_config_t tx_config = {.loop_count = 0};
+    uint16_t hue_values[2] = {200, 320};  // HSV hues for Purple and Blue
+    int current_color_index = 0;
+
+    while (gpio_get_level(BOOT_BUTTON_GPIO) != 0) { // Run until button is pressed
+        uint16_t start_hue = hue_values[current_color_index];
+        uint16_t end_hue = hue_values[(current_color_index + 1) % 2];
+
+        for (int step = 0; step < 100; ++step) {
+            uint16_t interpolated_hue = start_hue + (end_hue - start_hue) * step / 100;
+
+            for (int i = 0; i < EXAMPLE_LED_NUMBERS; ++i) {
+                uint32_t red, green, blue;
+                led_strip_hsv2rgb(interpolated_hue, 100, BRIGHTNESS, &red, &green, &blue);
+
+                led_strip_pixels[i * 3 + 0] = red;
+                led_strip_pixels[i * 3 + 1] = green;
+                led_strip_pixels[i * 3 + 2] = blue;
+            }
+
+            ESP_ERROR_CHECK(rmt_transmit(led_chan, led_encoder, led_strip_pixels, sizeof(led_strip_pixels), &tx_config));
+            ESP_ERROR_CHECK(rmt_tx_wait_all_done(led_chan, portMAX_DELAY));
+            vTaskDelay(pdMS_TO_TICKS(EXAMPLE_CHASE_SPEED_MS));
+        }
+
+        current_color_index = (current_color_index + 1) % 2;
+    }
+}
+static void IRAM_ATTR gpio_isr_handler(void* arg) {
+    static uint32_t last_isr_time = 0;
+    uint32_t current_time = xTaskGetTickCountFromISR();
+    if ((current_time - last_isr_time) > pdMS_TO_TICKS(50)) { // 50 ms debounce time
+        uint32_t gpio_num = (uint32_t) arg;
+        xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+        last_isr_time = current_time;
+    }
+}
+
+void handle_button_press(uint8_t *effect_mode, rmt_channel_handle_t led_chan, rmt_encoder_handle_t led_encoder) {
+    uint32_t io_num;
+    if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
+        if (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+            uint32_t press_start_time = xTaskGetTickCount();
+            while (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+                if ((xTaskGetTickCount() - press_start_time) > pdMS_TO_TICKS(1000)) {
+                    strobe_effect(led_chan, led_encoder);
+                    *effect_mode = 0; // Reset to default mode
+                    return;
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            *effect_mode = (*effect_mode + 1) % 2; // Toggle only between 0 and 1
+        }
+    }
+}
+
+void app_main(void) {
+    gpio_config_t io_conf = {
+        .mode = GPIO_MODE_INPUT,
+        .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    gpio_evt_queue = xQueueCreate(10, sizeof(uint32_t));
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(BOOT_BUTTON_GPIO, gpio_isr_handler, (void*) BOOT_BUTTON_GPIO);
+
+    ESP_LOGI(TAG, "Create RMT TX channel");
+    rmt_channel_handle_t led_chan = NULL;
+    rmt_tx_channel_config_t tx_chan_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .gpio_num = RMT_LED_STRIP_GPIO_NUM,
+        .mem_block_symbols = 64,
+        .resolution_hz = RMT_LED_STRIP_RESOLUTION_HZ,
+        .trans_queue_depth = 4,
+    };
+    ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_chan_config, &led_chan));
+
+    ESP_LOGI(TAG, "Install led strip encoder");
+    rmt_encoder_handle_t led_encoder = NULL;
+    led_strip_encoder_config_t encoder_config = {.resolution = RMT_LED_STRIP_RESOLUTION_HZ};
+    ESP_ERROR_CHECK(rmt_new_led_strip_encoder(&encoder_config, &led_encoder));
+
+    ESP_LOGI(TAG, "Enable RMT TX channel");
+    ESP_ERROR_CHECK(rmt_enable(led_chan));
+
+    uint8_t effect_mode = 0; // 0 = color transition, 1 = smooth, 2 = strobe (on button hold)
+
+    while (1) {
+        handle_button_press(&effect_mode, led_chan, led_encoder);
+
+        if (effect_mode == 0) {
+            color_transition_effect(led_chan, led_encoder);
+        } else if (effect_mode == 1) {
+            smooth_interpolation_effect(led_chan, led_encoder);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100)); // Prevent CPU overuse
     }
 }
