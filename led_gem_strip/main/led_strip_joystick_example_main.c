@@ -62,6 +62,7 @@
 #define AUTO_SOLID_MAX_INTERVAL_MS 200
 #define AUTO_SOLID_INTERVAL_STEP_MS 10
 #define AUTO_SOLID_DEFAULT_INTERVAL_MS 60
+#define AUTO_SOLID_HUE_STEP_DEG 1
 
 #define SOLID_HUE_STEP_DEG 5
 #define SOLID_DEFAULT_HUE 270
@@ -264,7 +265,7 @@ static void render_solid_auto(const effect_config_t *cfg, effect_runtime_t *rt,
   }
   rt->solid_auto_last_update = now_ticks;
 
-  rt->solid_auto_hue = (rt->solid_auto_hue + SOLID_HUE_STEP_DEG) % 360;
+  rt->solid_auto_hue = (rt->solid_auto_hue + AUTO_SOLID_HUE_STEP_DEG) % 360;
 
   uint32_t red = 0;
   uint32_t green = 0;
@@ -422,7 +423,6 @@ static void reset_runtime_for_mode(effect_runtime_t *rt, led_mode_t mode) {
     break;
   case LED_MODE_SOLID_AUTO:
     rt->solid_auto_last_update = 0;
-    rt->solid_auto_hue = SOLID_DEFAULT_HUE;
     break;
   case LED_MODE_FIREBALL:
     rt->fireball_last_update = 0;
@@ -595,6 +595,8 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     printf("\n LEFT STICK \n");
     *mode = LED_MODE_SOLID_AUTO;
     reset_runtime_for_mode(rt, LED_MODE_SOLID_AUTO);
+    rt->solid_auto_hue = cfg->solid_hue_deg;
+    rt->solid_auto_last_update = 0;
     break;
   case JOY_RIGHT_PIN:
     printf("\n RIGHT STICK \n");
@@ -625,6 +627,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     printf("\n UP STICK \n");
     if (*mode == LED_MODE_SOLID) {
       cfg->solid_hue_deg = (cfg->solid_hue_deg + SOLID_HUE_STEP_DEG) % 360;
+      rt->solid_auto_hue = cfg->solid_hue_deg;
     } else if (*mode == LED_MODE_RAINBOW) {
       uint32_t next = cfg->rainbow_interval_ms;
       next = (next <= RAINBOW_MIN_INTERVAL_MS + RAINBOW_INTERVAL_STEP_MS)
@@ -660,6 +663,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     if (*mode == LED_MODE_SOLID) {
       cfg->solid_hue_deg =
           (cfg->solid_hue_deg + 360 - SOLID_HUE_STEP_DEG) % 360;
+      rt->solid_auto_hue = cfg->solid_hue_deg;
     } else if (*mode == LED_MODE_RAINBOW) {
       uint32_t next = cfg->rainbow_interval_ms + RAINBOW_INTERVAL_STEP_MS;
       cfg->rainbow_interval_ms =
@@ -684,6 +688,10 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
   }
 
 combo_exit:
+  if (previous_mode == LED_MODE_SOLID_AUTO && *mode != LED_MODE_SOLID_AUTO) {
+    cfg->solid_hue_deg = rt->solid_auto_hue;
+  }
+
   if (*mode != previous_mode) {
     ESP_LOGI(TAG, "Switched to %s mode", mode_to_string[*mode]);
     reset_runtime_for_mode(rt, *mode);
