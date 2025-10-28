@@ -14,7 +14,8 @@
  *  - LEFT: select rainbow animation.
  *  - RIGHT: select strobe animation.
  *  - DOWN/UP: slow down / speed up the active animation, or adjust solid hue.
- *  - CENTER: toggle overall LED output.
+ *  - CENTER: contributes to combos (press three times to toggle overall LED
+ *    output).
  *  - SET: toggle solid-mode brightness.
  *  - RESET: fallback to solid mode using default parameters.
  */
@@ -50,12 +51,19 @@
 
 #define DEBOUNCE_TIME_US 30000
 #define MAX_GPIO_INDEX 48
+#define POWER_TOGGLE_COMBO_LENGTH 3
 
 static const char *TAG = "joy_led";
 
 static QueueHandle_t s_gpio_evt_queue;
 static int64_t s_last_event_us[MAX_GPIO_INDEX] = {0};
 static uint8_t led_strip_pixels[EXAMPLE_LED_NUMBERS * 3];
+static const gpio_num_t s_power_toggle_combo[POWER_TOGGLE_COMBO_LENGTH] = {
+    JOY_CENTER_PIN,
+    JOY_CENTER_PIN,
+    JOY_CENTER_PIN,
+};
+static uint32_t s_power_toggle_combo_index = 0;
 
 static const char *mode_to_string[] = {
     "RAINBOW",
@@ -297,12 +305,37 @@ static void configure_input(gpio_num_t pin) {
   ESP_ERROR_CHECK(gpio_isr_handler_add(pin, gpio_isr_handler, (void *)pin));
 }
 
+static bool process_power_toggle_combo(uint32_t gpio_num,
+                                       bool *lights_enabled) {
+  if (gpio_num == s_power_toggle_combo[s_power_toggle_combo_index]) {
+    s_power_toggle_combo_index++;
+    if (gpio_num == JOY_CENTER_PIN) {
+      ESP_LOGI(TAG, "Center combo progress %u/%u",
+               (unsigned int)s_power_toggle_combo_index,
+               (unsigned int)POWER_TOGGLE_COMBO_LENGTH);
+    }
+    if (s_power_toggle_combo_index == POWER_TOGGLE_COMBO_LENGTH) {
+      *lights_enabled = !*lights_enabled;
+      ESP_LOGI(TAG, "LED output %s (combo)",
+               *lights_enabled ? "enabled" : "disabled");
+      s_power_toggle_combo_index = 0;
+      return true;
+    }
+  } else {
+    s_power_toggle_combo_index =
+        (gpio_num == s_power_toggle_combo[0]) ? 1 : 0;
+  }
+  return false;
+}
+
 static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
                                   effect_config_t *cfg, effect_runtime_t *rt,
                                   bool *lights_enabled) {
   if (gpio_num >= MAX_GPIO_INDEX) {
     return;
   }
+
+  (void)process_power_toggle_combo(gpio_num, lights_enabled);
 
   led_mode_t previous_mode = *mode;
 
@@ -324,9 +357,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     cfg->solid_high_brightness = true;
     break;
   case JOY_CENTER_PIN:
-    printf("\n CENTER PRESS \n");
-    *lights_enabled = !*lights_enabled;
-    ESP_LOGI(TAG, "LED output %s", *lights_enabled ? "enabled" : "disabled");
+    printf("\n CENTER PRESS (combo input)\n");
     break;
   case JOY_SET_PIN:
     printf("\n SET BUTTON \n");
