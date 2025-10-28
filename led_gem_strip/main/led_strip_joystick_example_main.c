@@ -308,12 +308,15 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
 
   switch (gpio_num) {
   case JOY_LEFT_PIN:
+    printf("\n LEFT STICK \n");
     *mode = LED_MODE_RAINBOW;
     break;
   case JOY_RIGHT_PIN:
+    printf("\n RIGHT STICK \n");
     *mode = LED_MODE_STROBE;
     break;
   case JOY_RESET_PIN:
+    printf("\n RESET BUTTON \n");
     *mode = LED_MODE_SOLID;
     cfg->rainbow_interval_ms = RAINBOW_DEFAULT_INTERVAL_MS;
     cfg->strobe_interval_ms = STROBE_DEFAULT_INTERVAL_MS;
@@ -321,15 +324,18 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     cfg->solid_high_brightness = true;
     break;
   case JOY_CENTER_PIN:
+    printf("\n CENTER PRESS \n");
     *lights_enabled = !*lights_enabled;
     ESP_LOGI(TAG, "LED output %s", *lights_enabled ? "enabled" : "disabled");
     break;
   case JOY_SET_PIN:
+    printf("\n SET BUTTON \n");
     cfg->solid_high_brightness = !cfg->solid_high_brightness;
     ESP_LOGI(TAG, "Solid brightness %s",
              cfg->solid_high_brightness ? "high" : "low");
     break;
   case JOY_UP_PIN:
+    printf("\n UP STICK \n");
     if (*mode == LED_MODE_SOLID) {
       cfg->solid_hue_deg = (cfg->solid_hue_deg + SOLID_HUE_STEP_DEG) % 360;
     } else if (*mode == LED_MODE_RAINBOW) {
@@ -349,6 +355,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     }
     break;
   case JOY_DOWN_PIN:
+    printf("\n DOWN STICK \n");
     if (*mode == LED_MODE_SOLID) {
       cfg->solid_hue_deg =
           (cfg->solid_hue_deg + 360 - SOLID_HUE_STEP_DEG) % 360;
@@ -362,6 +369,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
           clamp_u32(next, STROBE_MIN_INTERVAL_MS, STROBE_MAX_INTERVAL_MS);
     }
     break;
+
   default:
     break;
   }
