@@ -13,12 +13,13 @@
 /*
  * Joystick control mapping (active HIGH digital joystick):
  *  - LEFT: select rainbow animation.
- *  - RIGHT: select strobe animation.
+ *  - RIGHT: select fireball animation (orange sweep into red, then strobe).
  *  - DOWN/UP: slow down / speed up the active animation, or adjust solid hue.
  *  - CENTER: contributes to combos (press three times to toggle overall LED
- *    output).
- *  - SET: toggle solid-mode brightness.
- *  - RESET: fallback to solid mode using default parameters.
+ *    output) and snaps back to solid mode.
+ *  - SET: nudge solid-mode brightness downward.
+ *  - RESET: nudge solid-mode brightness upward.
+ *  - COMBO (LEFT, UP, RIGHT, DOWN, CENTER): jump to strobe mode.
  */
 
 #define RMT_LED_STRIP_RESOLUTION_HZ 10000000
@@ -45,6 +46,13 @@
 #define STROBE_MAX_INTERVAL_MS 250
 #define STROBE_INTERVAL_STEP_MS 10
 #define STROBE_DEFAULT_INTERVAL_MS 140
+
+#define FIREBALL_MIN_INTERVAL_MS 10
+#define FIREBALL_MAX_INTERVAL_MS 200
+#define FIREBALL_INTERVAL_STEP_MS 10
+#define FIREBALL_DEFAULT_INTERVAL_MS 40
+#define FIREBALL_SWEEP_STEPS 20
+#define FIREBALL_STROBE_BLINKS 6
 
 #define SOLID_HUE_STEP_DEG 15
 #define SOLID_DEFAULT_HUE 270
@@ -80,12 +88,14 @@ static uint32_t s_strobe_toggle_combo_index = 0;
 static const char *mode_to_string[] = {
     "RAINBOW",
     "SOLID",
+    "FIREBALL",
     "STROBE",
 };
 
 typedef enum {
   LED_MODE_RAINBOW = 0,
   LED_MODE_SOLID,
+  LED_MODE_FIREBALL,
   LED_MODE_STROBE,
   LED_MODE_COUNT,
 } led_mode_t;
@@ -93,6 +103,7 @@ typedef enum {
 typedef struct {
   uint32_t rainbow_interval_ms;
   uint32_t strobe_interval_ms;
+  uint32_t fireball_interval_ms;
   uint32_t solid_hue_deg;
   uint32_t solid_high_brightness;
 } effect_config_t;
@@ -101,6 +112,11 @@ typedef struct {
   TickType_t rainbow_last_update;
   uint16_t rainbow_base_hue;
   TickType_t solid_last_update;
+  TickType_t fireball_last_update;
+  uint8_t fireball_step;
+  uint8_t fireball_strobe_step;
+  bool fireball_in_strobe_phase;
+  bool fireball_strobe_on;
   TickType_t strobe_last_toggle;
   bool strobe_on;
 } effect_runtime_t;
@@ -220,6 +236,72 @@ static void render_solid(const effect_config_t *cfg, effect_runtime_t *rt,
   send_pixels(led_chan, led_encoder);
 }
 
+static void render_fireball(const effect_config_t *cfg, effect_runtime_t *rt,
+                            TickType_t now_ticks, rmt_channel_handle_t led_chan,
+                            rmt_encoder_handle_t led_encoder) {
+  if ((now_ticks - rt->fireball_last_update) <
+      pdMS_TO_TICKS(cfg->fireball_interval_ms)) {
+    return;
+  }
+  rt->fireball_last_update = now_ticks;
+
+  uint32_t red = 0;
+  uint32_t green = 0;
+  uint32_t blue = 0;
+
+  if (!rt->fireball_in_strobe_phase) {
+    const uint32_t start_hue = 230; // orange
+    const uint32_t end_hue = 240;   // deep red
+    uint32_t step = rt->fireball_step;
+    if (step >= FIREBALL_SWEEP_STEPS) {
+      step = FIREBALL_SWEEP_STEPS - 1;
+    }
+
+    uint32_t hue = start_hue;
+    if (FIREBALL_SWEEP_STEPS > 1) {
+      hue = start_hue +
+            ((end_hue - start_hue) * step) / (FIREBALL_SWEEP_STEPS - 1);
+    }
+
+    led_strip_hsv2rgb(hue, 100, cfg->solid_high_brightness, &red, &green,
+                      &blue);
+
+    for (int i = 0; i < EXAMPLE_LED_NUMBERS; ++i) {
+      led_strip_pixels[i * 3 + 0] = green;
+      led_strip_pixels[i * 3 + 1] = blue;
+      led_strip_pixels[i * 3 + 2] = red;
+    }
+
+    rt->fireball_step++;
+    if (rt->fireball_step >= FIREBALL_SWEEP_STEPS) {
+      rt->fireball_step = 0;
+      rt->fireball_in_strobe_phase = true;
+      rt->fireball_strobe_step = 0;
+      rt->fireball_strobe_on = false;
+    }
+  } else {
+    rt->fireball_strobe_on = !rt->fireball_strobe_on;
+    uint32_t brightness =
+        rt->fireball_strobe_on ? cfg->solid_high_brightness : 0;
+    led_strip_hsv2rgb(240, 100, brightness, &red, &green, &blue);
+
+    for (int i = 0; i < EXAMPLE_LED_NUMBERS; ++i) {
+      led_strip_pixels[i * 3 + 0] = green;
+      led_strip_pixels[i * 3 + 1] = blue;
+      led_strip_pixels[i * 3 + 2] = red;
+    }
+
+    rt->fireball_strobe_step++;
+    if (rt->fireball_strobe_step >= FIREBALL_STROBE_BLINKS) {
+      rt->fireball_in_strobe_phase = false;
+      rt->fireball_strobe_step = 0;
+      rt->fireball_strobe_on = false;
+    }
+  }
+
+  send_pixels(led_chan, led_encoder);
+}
+
 static void render_strobe(const effect_config_t *cfg, effect_runtime_t *rt,
                           TickType_t now_ticks, rmt_channel_handle_t led_chan,
                           rmt_encoder_handle_t led_encoder) {
@@ -254,6 +336,13 @@ static void reset_runtime_for_mode(effect_runtime_t *rt, led_mode_t mode) {
     break;
   case LED_MODE_SOLID:
     rt->solid_last_update = 0;
+    break;
+  case LED_MODE_FIREBALL:
+    rt->fireball_last_update = 0;
+    rt->fireball_step = 0;
+    rt->fireball_strobe_step = 0;
+    rt->fireball_in_strobe_phase = false;
+    rt->fireball_strobe_on = false;
     break;
   case LED_MODE_STROBE:
     rt->strobe_last_toggle = 0;
@@ -294,6 +383,9 @@ static void update_led_modes(led_mode_t mode, bool lights_enabled,
     break;
   case LED_MODE_SOLID:
     render_solid(cfg, rt, now_ticks, led_chan, led_encoder);
+    break;
+  case LED_MODE_FIREBALL:
+    render_fireball(cfg, rt, now_ticks, led_chan, led_encoder);
     break;
   case LED_MODE_STROBE:
     render_strobe(cfg, rt, now_ticks, led_chan, led_encoder);
@@ -386,6 +478,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     break;
   case JOY_RIGHT_PIN:
     printf("\n RIGHT STICK \n");
+    *mode = LED_MODE_FIREBALL;
     break;
   case JOY_RESET_PIN:
     printf("\n RESET BUTTON \n");
@@ -418,6 +511,13 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
                  : next - RAINBOW_INTERVAL_STEP_MS;
       cfg->rainbow_interval_ms =
           clamp_u32(next, RAINBOW_MIN_INTERVAL_MS, RAINBOW_MAX_INTERVAL_MS);
+    } else if (*mode == LED_MODE_FIREBALL) {
+      uint32_t next = cfg->fireball_interval_ms;
+      next = (next <= FIREBALL_MIN_INTERVAL_MS + FIREBALL_INTERVAL_STEP_MS)
+                 ? FIREBALL_MIN_INTERVAL_MS
+                 : next - FIREBALL_INTERVAL_STEP_MS;
+      cfg->fireball_interval_ms =
+          clamp_u32(next, FIREBALL_MIN_INTERVAL_MS, FIREBALL_MAX_INTERVAL_MS);
     } else if (*mode == LED_MODE_STROBE) {
       uint32_t next = cfg->strobe_interval_ms;
       next = (next <= STROBE_MIN_INTERVAL_MS + STROBE_INTERVAL_STEP_MS)
@@ -436,6 +536,10 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
       uint32_t next = cfg->rainbow_interval_ms + RAINBOW_INTERVAL_STEP_MS;
       cfg->rainbow_interval_ms =
           clamp_u32(next, RAINBOW_MIN_INTERVAL_MS, RAINBOW_MAX_INTERVAL_MS);
+    } else if (*mode == LED_MODE_FIREBALL) {
+      uint32_t next = cfg->fireball_interval_ms + FIREBALL_INTERVAL_STEP_MS;
+      cfg->fireball_interval_ms =
+          clamp_u32(next, FIREBALL_MIN_INTERVAL_MS, FIREBALL_MAX_INTERVAL_MS);
     } else if (*mode == LED_MODE_STROBE) {
       uint32_t next = cfg->strobe_interval_ms + STROBE_INTERVAL_STEP_MS;
       cfg->strobe_interval_ms =
@@ -479,6 +583,7 @@ void app_main(void) {
   effect_config_t config = {
       .rainbow_interval_ms = RAINBOW_DEFAULT_INTERVAL_MS,
       .strobe_interval_ms = STROBE_DEFAULT_INTERVAL_MS,
+      .fireball_interval_ms = FIREBALL_DEFAULT_INTERVAL_MS,
       .solid_hue_deg = SOLID_DEFAULT_HUE,
       .solid_high_brightness = SOLID_BRIGHTNSS_DEFAULT,
   };
@@ -486,6 +591,11 @@ void app_main(void) {
       .rainbow_last_update = 0,
       .rainbow_base_hue = 0,
       .solid_last_update = 0,
+      .fireball_last_update = 0,
+      .fireball_step = 0,
+      .fireball_strobe_step = 0,
+      .fireball_in_strobe_phase = false,
+      .fireball_strobe_on = false,
       .strobe_last_toggle = 0,
       .strobe_on = false,
   };
