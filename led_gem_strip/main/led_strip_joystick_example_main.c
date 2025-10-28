@@ -6,6 +6,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "led_strip_encoder.h"
+#include "riscv/encoding.h"
 #include <stdbool.h>
 #include <string.h>
 
@@ -35,7 +36,7 @@
 
 #define ESP_INTR_FLAG_DEFAULT 0
 
-#define RAINBOW_MIN_INTERVAL_MS 10
+#define RAINBOW_MIN_INTERVAL_MS 1
 #define RAINBOW_MAX_INTERVAL_MS 180
 #define RAINBOW_INTERVAL_STEP_MS 10
 #define RAINBOW_DEFAULT_INTERVAL_MS 60
@@ -46,12 +47,17 @@
 #define STROBE_DEFAULT_INTERVAL_MS 140
 
 #define SOLID_HUE_STEP_DEG 15
-#define SOLID_DEFAULT_HUE 180
+#define SOLID_DEFAULT_HUE 270
 #define SOLID_UPDATE_INTERVAL_MS 60
 
 #define DEBOUNCE_TIME_US 30000
 #define MAX_GPIO_INDEX 48
 #define POWER_TOGGLE_COMBO_LENGTH 3
+
+#define SOLID_BRIGHTNESS_MIN 10
+#define SOLID_BRIGHTNESS_MAX 100
+#define SOLID_BRIGHTNESS_STEP 10
+#define SOLID_BRIGHTNSS_DEFAULT 60
 
 static const char *TAG = "joy_led";
 
@@ -82,7 +88,7 @@ typedef struct {
   uint32_t rainbow_interval_ms;
   uint32_t strobe_interval_ms;
   uint32_t solid_hue_deg;
-  bool solid_high_brightness;
+  uint32_t solid_high_brightness;
 } effect_config_t;
 
 typedef struct {
@@ -174,7 +180,8 @@ static void render_rainbow(const effect_config_t *cfg, effect_runtime_t *rt,
     uint32_t red = 0;
     uint32_t green = 0;
     uint32_t blue = 0;
-    led_strip_hsv2rgb(hue, 100, 70, &red, &green, &blue);
+    led_strip_hsv2rgb(hue, 100, cfg->solid_high_brightness, &red, &green,
+                      &blue);
     led_strip_pixels[i * 3 + 0] = green;
     led_strip_pixels[i * 3 + 1] = blue;
     led_strip_pixels[i * 3 + 2] = red;
@@ -195,7 +202,7 @@ static void render_solid(const effect_config_t *cfg, effect_runtime_t *rt,
   uint32_t red = 0;
   uint32_t green = 0;
   uint32_t blue = 0;
-  uint32_t value = cfg->solid_high_brightness ? 90 : 40;
+  uint32_t value = cfg->solid_high_brightness;
   led_strip_hsv2rgb(cfg->solid_hue_deg, 90, value, &red, &green, &blue);
 
   for (int i = 0; i < EXAMPLE_LED_NUMBERS; ++i) {
@@ -218,9 +225,11 @@ static void render_strobe(const effect_config_t *cfg, effect_runtime_t *rt,
   rt->strobe_last_toggle = now_ticks;
   rt->strobe_on = !rt->strobe_on;
 
-  uint32_t red = rt->strobe_on ? 255 : 0;
-  uint32_t green = rt->strobe_on ? 255 : 0;
-  uint32_t blue = rt->strobe_on ? 255 : 0;
+  uint32_t red = 0;
+  uint32_t green = 0;
+  uint32_t blue = 0;
+  uint32_t brightness = rt->strobe_on ? cfg->solid_high_brightness : 0;
+  led_strip_hsv2rgb(0, 0, brightness, &red, &green, &blue);
 
   for (int i = 0; i < EXAMPLE_LED_NUMBERS; ++i) {
     led_strip_pixels[i * 3 + 0] = green;
@@ -322,8 +331,7 @@ static bool process_power_toggle_combo(uint32_t gpio_num,
       return true;
     }
   } else {
-    s_power_toggle_combo_index =
-        (gpio_num == s_power_toggle_combo[0]) ? 1 : 0;
+    s_power_toggle_combo_index = (gpio_num == s_power_toggle_combo[0]) ? 1 : 0;
   }
   return false;
 }
@@ -350,20 +358,23 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     break;
   case JOY_RESET_PIN:
     printf("\n RESET BUTTON \n");
-    *mode = LED_MODE_SOLID;
-    cfg->rainbow_interval_ms = RAINBOW_DEFAULT_INTERVAL_MS;
-    cfg->strobe_interval_ms = STROBE_DEFAULT_INTERVAL_MS;
-    cfg->solid_hue_deg = SOLID_DEFAULT_HUE;
-    cfg->solid_high_brightness = true;
+    cfg->solid_high_brightness =
+        clamp_u32(cfg->solid_high_brightness + SOLID_BRIGHTNESS_STEP,
+                  SOLID_BRIGHTNESS_MIN, SOLID_BRIGHTNESS_MAX);
+
+    ESP_LOGI(TAG, "Solid brightness %d", cfg->solid_high_brightness);
     break;
   case JOY_CENTER_PIN:
     printf("\n CENTER PRESS (combo input)\n");
+    *mode = LED_MODE_SOLID;
     break;
   case JOY_SET_PIN:
     printf("\n SET BUTTON \n");
-    cfg->solid_high_brightness = !cfg->solid_high_brightness;
-    ESP_LOGI(TAG, "Solid brightness %s",
-             cfg->solid_high_brightness ? "high" : "low");
+
+    cfg->solid_high_brightness =
+        clamp_u32(cfg->solid_high_brightness - SOLID_BRIGHTNESS_STEP,
+                  SOLID_BRIGHTNESS_MIN, SOLID_BRIGHTNESS_MAX);
+    ESP_LOGI(TAG, "Solid brightness %d", cfg->solid_high_brightness);
     break;
   case JOY_UP_PIN:
     printf("\n UP STICK \n");
@@ -437,7 +448,7 @@ void app_main(void) {
       .rainbow_interval_ms = RAINBOW_DEFAULT_INTERVAL_MS,
       .strobe_interval_ms = STROBE_DEFAULT_INTERVAL_MS,
       .solid_hue_deg = SOLID_DEFAULT_HUE,
-      .solid_high_brightness = true,
+      .solid_high_brightness = SOLID_BRIGHTNSS_DEFAULT,
   };
   effect_runtime_t runtime = {
       .rainbow_last_update = 0,
