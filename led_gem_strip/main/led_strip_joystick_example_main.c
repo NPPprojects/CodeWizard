@@ -53,6 +53,7 @@
 #define DEBOUNCE_TIME_US 30000
 #define MAX_GPIO_INDEX 48
 #define POWER_TOGGLE_COMBO_LENGTH 3
+#define STROBE_TOGGLE_COMBO_LENGTH 5
 
 #define SOLID_BRIGHTNESS_MIN 10
 #define SOLID_BRIGHTNESS_MAX 100
@@ -69,7 +70,12 @@ static const gpio_num_t s_power_toggle_combo[POWER_TOGGLE_COMBO_LENGTH] = {
     JOY_CENTER_PIN,
     JOY_CENTER_PIN,
 };
+
+static const gpio_num_t s_strobe_toggle_combo[STROBE_TOGGLE_COMBO_LENGTH] = {
+    JOY_LEFT_PIN, JOY_UP_PIN, JOY_RIGHT_PIN, JOY_DOWN_PIN, JOY_CENTER_PIN,
+};
 static uint32_t s_power_toggle_combo_index = 0;
+static uint32_t s_strobe_toggle_combo_index = 0;
 
 static const char *mode_to_string[] = {
     "RAINBOW",
@@ -336,6 +342,27 @@ static bool process_power_toggle_combo(uint32_t gpio_num,
   return false;
 }
 
+static bool process_strobe_toggle_combo(uint32_t gpio_num, led_mode_t *mode,
+                                        bool *lights_enabled) {
+  if (gpio_num == s_strobe_toggle_combo[s_strobe_toggle_combo_index]) {
+    s_strobe_toggle_combo_index++;
+    ESP_LOGI(TAG, "Strobe combo progress %u/%u",
+             (unsigned int)s_strobe_toggle_combo_index,
+             (unsigned int)STROBE_TOGGLE_COMBO_LENGTH);
+    if (s_strobe_toggle_combo_index == STROBE_TOGGLE_COMBO_LENGTH) {
+      *mode = LED_MODE_STROBE;
+      *lights_enabled = true;
+      ESP_LOGI(TAG, "Strobe combo complete -> strobe mode activated");
+      s_strobe_toggle_combo_index = 0;
+      return true;
+    }
+  } else {
+    s_strobe_toggle_combo_index =
+        (gpio_num == s_strobe_toggle_combo[0]) ? 1 : 0;
+  }
+  return false;
+}
+
 static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
                                   effect_config_t *cfg, effect_runtime_t *rt,
                                   bool *lights_enabled) {
@@ -343,9 +370,14 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     return;
   }
 
-  (void)process_power_toggle_combo(gpio_num, lights_enabled);
-
   led_mode_t previous_mode = *mode;
+
+  (void)process_power_toggle_combo(gpio_num, lights_enabled);
+  bool strobe_combo_triggered =
+      process_strobe_toggle_combo(gpio_num, mode, lights_enabled);
+  if (strobe_combo_triggered) {
+    goto combo_exit;
+  }
 
   switch (gpio_num) {
   case JOY_LEFT_PIN:
@@ -354,7 +386,6 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     break;
   case JOY_RIGHT_PIN:
     printf("\n RIGHT STICK \n");
-    *mode = LED_MODE_STROBE;
     break;
   case JOY_RESET_PIN:
     printf("\n RESET BUTTON \n");
@@ -416,6 +447,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     break;
   }
 
+combo_exit:
   if (*mode != previous_mode) {
     ESP_LOGI(TAG, "Switched to %s mode", mode_to_string[*mode]);
     reset_runtime_for_mode(rt, *mode);
