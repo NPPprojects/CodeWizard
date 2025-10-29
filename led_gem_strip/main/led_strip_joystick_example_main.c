@@ -592,19 +592,19 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
 
   switch (gpio_num) {
   case JOY_LEFT_PIN:
-    printf("\n LEFT STICK \n");
+    ESP_LOGI(TAG, "Joystick LEFT -> Aurora mode");
     *mode = LED_MODE_SOLID_AUTO;
     reset_runtime_for_mode(rt, LED_MODE_SOLID_AUTO);
     rt->solid_auto_hue = cfg->solid_hue_deg;
     rt->solid_auto_last_update = 0;
     break;
   case JOY_RIGHT_PIN:
-    printf("\n RIGHT STICK \n");
+    ESP_LOGI(TAG, "Joystick RIGHT -> Fireball mode");
     *mode = LED_MODE_FIREBALL;
     reset_runtime_for_mode(rt, LED_MODE_FIREBALL);
     break;
   case JOY_RESET_PIN:
-    printf("\n RESET BUTTON \n");
+    ESP_LOGI(TAG, "RESET button pressed");
     cfg->solid_high_brightness =
         clamp_u32(cfg->solid_high_brightness + SOLID_BRIGHTNESS_STEP,
                   SOLID_BRIGHTNESS_MIN, SOLID_BRIGHTNESS_MAX);
@@ -612,11 +612,11 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     ESP_LOGI(TAG, "Solid brightness %d", cfg->solid_high_brightness);
     break;
   case JOY_CENTER_PIN:
-    printf("\n CENTER PRESS (combo input)\n");
+    ESP_LOGI(TAG, "CENTER press -> Solid mode");
     *mode = LED_MODE_SOLID;
     break;
   case JOY_SET_PIN:
-    printf("\n SET BUTTON \n");
+    ESP_LOGI(TAG, "SET button pressed");
 
     cfg->solid_high_brightness =
         clamp_u32(cfg->solid_high_brightness - SOLID_BRIGHTNESS_STEP,
@@ -624,7 +624,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     ESP_LOGI(TAG, "Solid brightness %d", cfg->solid_high_brightness);
     break;
   case JOY_UP_PIN:
-    printf("\n UP STICK \n");
+    ESP_LOGI(TAG, "Joystick UP");
     if (*mode == LED_MODE_SOLID) {
       cfg->solid_hue_deg = (cfg->solid_hue_deg + SOLID_HUE_STEP_DEG) % 360;
       rt->solid_auto_hue = cfg->solid_hue_deg;
@@ -659,7 +659,7 @@ static void handle_joystick_event(uint32_t gpio_num, led_mode_t *mode,
     }
     break;
   case JOY_DOWN_PIN:
-    printf("\n DOWN STICK \n");
+    ESP_LOGI(TAG, "Joystick DOWN");
     if (*mode == LED_MODE_SOLID) {
       cfg->solid_hue_deg =
           (cfg->solid_hue_deg + 360 - SOLID_HUE_STEP_DEG) % 360;
